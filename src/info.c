@@ -122,10 +122,42 @@ char *get_cmdline() {
    return cmdline;
 }
 
-char *get_cmdline_prop(char *prop) {
+char *get_prop_no_space(char *cmdline, char *prop) {
    static char ret[PROP_SIZE];
    char *retptr = ret;
-   char *cmdline = get_cmdline();
+   char *cmdptr = cmdline;
+   int proplen = strlen(prop);
+   // continue until the end terminator
+   while (cmdptr && *cmdptr) {
+      // compare the property name
+      if (strncasecmp(cmdptr, prop, proplen) == 0) {
+         // check for an equals in the expected place
+         if (*(cmdptr + proplen) == '=') {
+            // skip the equals
+            cmdptr += proplen + 1;
+            // copy the property value to the return buffer
+            while (*cmdptr != ',' && *cmdptr != '\0' && *cmdptr != '\r' && *cmdptr != '\n') {
+               *retptr++ = *cmdptr++;
+            }
+            *retptr = '\0';
+            return ret;
+         }
+      }
+      // Skip to the next property
+      //cmdptr = index(cmdptr, ' ');
+      while (cmdptr && *cmdptr != ',' && *cmdptr != '\0' && *cmdptr != '\r' && *cmdptr != '\n') {
+         cmdptr++;
+      }
+      while (cmdptr && (*cmdptr == ',' || *cmdptr == '\r' || *cmdptr == '\n')) {
+         cmdptr++;
+      }
+   }
+   return NULL;
+}
+
+char *get_prop(char *cmdline, char *prop) {
+   static char ret[PROP_SIZE];
+   char *retptr = ret;
    char *cmdptr = cmdline;
    int proplen = strlen(prop);
 
@@ -138,7 +170,7 @@ char *get_cmdline_prop(char *prop) {
             // skip the equals
             cmdptr += proplen + 1;
             // copy the property value to the return buffer
-            while (*cmdptr != ' ' && *cmdptr != '\0') {
+            while (*cmdptr != ' ' && *cmdptr != '\0' && *cmdptr != '\r' && *cmdptr != '\n') {
                *retptr++ = *cmdptr++;
             }
             *retptr = '\0';
@@ -146,12 +178,19 @@ char *get_cmdline_prop(char *prop) {
          }
       }
       // Skip to the next property
-      cmdptr = index(cmdptr, ' ');
-      while (cmdptr && *cmdptr == ' ') {
+      //cmdptr = index(cmdptr, ' ');
+      while (cmdptr && *cmdptr != ' ' && *cmdptr != '\0' && *cmdptr != '\r' && *cmdptr != '\n') {
+         cmdptr++;
+      }
+      while (cmdptr && (*cmdptr == ' ' || *cmdptr == '\r' || *cmdptr == '\n')) {
          cmdptr++;
       }
    }
    return NULL;
+}
+char *get_cmdline_prop(char *prop) {
+     char *cmdline = get_cmdline();
+     return get_prop(cmdline, prop);
 }
 
 clock_info_t * get_clock_rates(int clk_id) {
@@ -190,8 +229,8 @@ void dump_useful_info() {
       , TAG_GET_BOARD_REVISION
       , TAG_GET_BOARD_MAC_ADDRESS
       , TAG_GET_BOARD_SERIAL
-      //, TAG_GET_ARM_MEMORY
-      //, TAG_GET_VC_MEMORY
+      , TAG_GET_ARM_MEMORY
+      , TAG_GET_VC_MEMORY
       //, TAG_GET_DMA_CHANNELS
       //, TAG_GET_CLOCKS
       //, TAG_GET_COMMAND_LINE
@@ -203,8 +242,8 @@ void dump_useful_info() {
       , "BOARD_REVISION"
       , "BOARD_MAC_ADDRESS"
       , "BOARD_SERIAL"
-      //, "ARM_MEMORY"
-      //, "VC_MEMORY"
+      , "ARM_MEMORY"
+      , "VC_MEMORY"
       //, "DMA_CHANNEL"
       //, "CLOCKS"
       //, "COMMAND_LINE"
@@ -227,7 +266,7 @@ void dump_useful_info() {
    int n = sizeof(tags) / sizeof(rpi_mailbox_tag_t);
    log_info(""); // put some new lines in the serial stream as we don't know what is currently on the terminal
    log_info("");
-   log_info("**********     Raspberry Pi BBC Micro Coprocessor     **********");
+   log_info("**********     Raspberry Pi RGB to HDMI Convertor     **********");
    log_info("");
    log_info("");
 
@@ -259,12 +298,5 @@ void dump_useful_info() {
    log_info("     SDRAM_C VOLTAGE : %6.2f V", get_voltage(COMPONENT_SDRAM_C));
    log_info("     SDRAM_P VOLTAGE : %6.2f V", get_voltage(COMPONENT_SDRAM_P));
    log_info("     SDRAM_I VOLTAGE : %6.2f V", get_voltage(COMPONENT_SDRAM_I));
-
    log_info("            CMD_LINE : %s", get_cmdline());
-   char *cs ;
-   cs = get_cmdline_prop("copro");
-   if (!cs)
-      cs = "0 (default)";
-   log_info("               COPRO : %s", cs);
-
 }

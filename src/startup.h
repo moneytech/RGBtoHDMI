@@ -15,6 +15,10 @@ extern int _disable_interrupts( void );
 
 extern unsigned int _get_cpsr();
 
+extern unsigned int _get_cycle_counter();
+
+extern unsigned int _init_cycle_counter();
+
 extern unsigned int _get_stack_pointer();
 
 extern void _enable_unaligned_access();
@@ -34,6 +38,8 @@ extern void _clean_invalidate_dcache_mva(void *address);
 extern void _invalidate_dtlb();
 
 extern void _invalidate_dtlb_mva(void *address);
+
+extern void __data_memory_barrier();
 
 extern unsigned int _get_core();
 

@@ -1,12 +1,12 @@
 ----------------------------------------------------------------------------------
 -- Engineer:            David Banks
 --
--- Create Date:         14/4/2017
+-- Create Date:         15/7/2018
 -- Module Name:         RGBtoHDMI CPLD
 -- Project Name:        RGBtoHDMI
 -- Target Devices:      XC9572XL
 --
--- Version:             0.50
+-- Version:             1.0
 --
 ----------------------------------------------------------------------------------
 library ieee;
@@ -14,47 +14,71 @@ use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
 entity RGBtoHDMI is
+    Generic (
+        SupportAnalog : boolean := false
+    );
     Port (
-        -- From Beeb RGB Connector
-        R:         in    std_logic;
-        G:         in    std_logic;
-        B:         in    std_logic;
-        S:         in    std_logic;
+        -- From RGB Connector
+        R0:        in    std_logic;
+        G0:        in    std_logic;
+        B0:        in    std_logic;
+        R1:        in    std_logic;
+        G1:        in    std_logic;
+        B1:        in    std_logic;
+        csync_in:  in    std_logic;
+        vsync_in:  in    std_logic;
+        analog:    inout std_logic;
 
         -- From Pi
         clk:       in    std_logic;
         mode7:     in    std_logic;
+        mux:       in    std_logic;
         sp_clk:    in    std_logic;
+        sp_clken:  in    std_logic;
         sp_data:   in    std_logic;
 
         -- To PI GPIO
         quad:      out   std_logic_vector(11 downto 0);
         psync:     out   std_logic;
         csync:     out   std_logic;
-        SWout:     out   std_logic;
 
-        -- Test
-        SW:        in    std_logic;
-        LED1:      out   std_logic;
-        LED2:      out   std_logic;
-        test:      out   std_logic
+        -- User interface
+        version:   in    std_logic;
+        SW1:       in    std_logic;
+        SW2:       in    std_logic;
+        SW3:       in    std_logic;
+
+        LED1:      in    std_logic  -- allow it to be driven from the Pi
     );
 end RGBtoHDMI;
 
 architecture Behavorial of RGBtoHDMI is
 
-    -- For Modes 0..6
-    constant default_offset : unsigned(11 downto 0) := to_unsigned(4096 - 64 * 23 + 6, 12);
+    subtype counter_type is unsigned(7 downto 0);
 
-    -- For Mode 7
-    constant mode7_offset : unsigned(11 downto 0) := to_unsigned(4096 - 96 * 12 + 4, 12);
+    -- Version number: Design_Major_Minor
+    -- Design: 0 = BBC CPLD
+    --         1 = Alternative CPLD
+    --         2 = Atom CPLD
+    --         3 = six bit CPLD (if required);
+    --         4 = RGB CPLD (TTL)
+    --         C = RGB CPLD (Analog)
+    constant VERSION_NUM_BBC        : std_logic_vector(11 downto 0) := x"066";
+    constant VERSION_NUM_RGB_TTL    : std_logic_vector(11 downto 0) := x"473";
+    constant VERSION_NUM_RGB_ANALOG : std_logic_vector(11 downto 0) := x"C73";
 
     -- Sampling points
-    constant INIT_SAMPLING_POINTS : std_logic_vector(20 downto 0) := "011011011011011011011";
+    constant INIT_SAMPLING_POINTS : std_logic_vector(23 downto 0) := "000000011011011011011011";
 
-    signal shift : std_logic_vector(11 downto 0);
+    signal shift_R  : std_logic_vector(3 downto 0);
+    signal shift_G  : std_logic_vector(3 downto 0);
+    signal shift_B  : std_logic_vector(3 downto 0);
 
-    signal CSYNC1 : std_logic;
+    signal csync1   : std_logic;
+    signal csync2   : std_logic;
+    signal last     : std_logic;
+
+    signal csync_counter : unsigned(1 downto 0);
 
     -- The sampling counter runs at 96MHz
     -- - In modes 0..6 it is 6x  the pixel clock
@@ -67,159 +91,290 @@ architecture Behavorial of RGBtoHDMI is
     -- 4. Handles double buffering of alternative quad pixels (bit 5)
     --
     -- At the moment we don't count pixels with the line, the Pi does that
-    signal counter : unsigned(11 downto 0);
-
-    signal counter2 : unsigned(5 downto 3);
-
-    -- Hsync is every 64us
-    --signal led_counter : unsigned(12 downto 0);
+    signal counter  : counter_type;
 
     -- Sample point register;
-    --
-    -- In Modes 0..6 each pixel lasts 6 clocks (96MHz / 16MHz). The original
-    -- pixel clock is a clean 16Mhz clock, so only one sample point is needed.
     --
     -- In Mode 7 each pixel lasts 8 clocks (96MHz / 12MHz). The original
     -- pixel clock is a regenerated 6Mhz clock, and both edges are used.
     -- Due to the way it is generated, there are three distinct phases,
-    -- hence three sampling points are used.
-    signal sp_reg     : std_logic_vector(20 downto 0) := INIT_SAMPLING_POINTS;
+    -- each with different rising/falling edge speeds, hence six sampling
+    -- points are used.
+    --
+    -- In Modes 0..6 each pixel lasts 6 clocks (96MHz / 16MHz). The original
+    -- pixel clock is a clean 16Mhz clock, so only one sample point is needed.
+    -- To achieve this, all six values are set to be the same. This minimises
+    -- the logic in the CPLD.
+    signal sp_reg   : std_logic_vector(23 downto 0) := INIT_SAMPLING_POINTS;
 
-    -- Break out of sp
-    signal sp         : std_logic_vector(2 downto 0);
-    signal mode7_sp_A : std_logic_vector(2 downto 0);
-    signal mode7_sp_B : std_logic_vector(2 downto 0);
-    signal mode7_sp_C : std_logic_vector(2 downto 0);
-    signal mode7_sp_D : std_logic_vector(2 downto 0);
-    signal mode7_sp_E : std_logic_vector(2 downto 0);
-    signal mode7_sp_F : std_logic_vector(2 downto 0);
-    signal default_sp : std_logic_vector(2 downto 0);
+    -- Break out of sp_reg
+    signal invert   : std_logic;
+    signal rate     : std_logic_vector(1 downto 0);
+    signal delay    : unsigned(1 downto 0);
+    signal half     : std_logic;
+    signal offset_A : std_logic_vector(2 downto 0);
+    signal offset_B : std_logic_vector(2 downto 0);
+    signal offset_C : std_logic_vector(2 downto 0);
+    signal offset_D : std_logic_vector(2 downto 0);
+    signal offset_E : std_logic_vector(2 downto 0);
+    signal offset_F : std_logic_vector(2 downto 0);
 
-    -- Index to allow cycling between A, B and C in Mode 7
-    signal sp_index   : std_logic_vector(2 downto 0);
+    -- Pipelined offset mux output
+    signal offset   : std_logic_vector(2 downto 0);
 
-    -- Sample pixel on next clock; pipelined to reducethe number of product terms
-    signal sample       : std_logic;
+    -- Index to cycle through offsets A..F
+    signal index    : std_logic_vector(2 downto 0);
+
+    -- Sample pixel on next clock; pipelined to reduce the number of product terms
+    signal sample   : std_logic;
+
+    -- New sample available, toggle psync on next cycle
+    signal toggle   : std_logic;
+
+    -- RGB Input Mux
+    signal old_mux  : std_logic;
+    signal new_mux  : std_logic;
+	 signal mux_sync : std_logic;
+	 
+    signal R        : std_logic;
+    signal G        : std_logic;
+    signal B        : std_logic;
+
+    signal clamp_int    : std_logic;
+    signal clamp_enable : std_logic;
 
 begin
+    old_mux <= mux when not(SupportAnalog) else '0';
+	 new_mux <= (mux and version) when SupportAnalog else '0';
+	 
+    R <= R1 when old_mux = '1' else R0;
+    G <= G1 when old_mux = '1' else G0;
+    B <= B1 when old_mux = '1' else B0;
 
---    process(S)
---    begin
---        if rising_edge(S) then
---            led_counter <= led_counter + 1;
---        end if;
---    end process;
+	 mux_sync <= vsync_in when new_mux = '1' else csync_in;
 
-    mode7_sp_A <= sp_reg(2 downto 0);
-    mode7_sp_B <= sp_reg(5 downto 3);
-    mode7_sp_C <= sp_reg(8 downto 6);
-    mode7_sp_D <= sp_reg(11 downto 9);
-    mode7_sp_E <= sp_reg(14 downto 12);
-    mode7_sp_F <= sp_reg(17 downto 15);
-    default_sp <= sp_reg(20 downto 18);
+    offset_A <= sp_reg(2 downto 0);
+    offset_B <= sp_reg(5 downto 3);
+    offset_C <= sp_reg(8 downto 6);
+    offset_D <= sp_reg(11 downto 9);
+    offset_E <= sp_reg(14 downto 12);
+    offset_F <= sp_reg(17 downto 15);
+    half     <= sp_reg(18);
+    delay    <= unsigned(sp_reg(20 downto 19));
+    rate     <= sp_reg(22 downto 21);
+    invert   <= sp_reg(23);
 
     -- Shift the bits in LSB first
-    process(sp_clk, SW)
+    process(sp_clk)
     begin
-        if SW = '0' then
-            sp_reg <= INIT_SAMPLING_POINTS;
-        elsif rising_edge(sp_clk) then
-            sp_reg <= sp_data & sp_reg(sp_reg'left downto sp_reg'right + 1);
+        if rising_edge(sp_clk) then
+            if sp_clken = '1' then
+                sp_reg <= sp_data & sp_reg(sp_reg'left downto sp_reg'right + 1);
+            end if;
         end if;
     end process;
 
     process(clk)
     begin
         if rising_edge(clk) then
-            -- synchronize CSYNC to the sampling clock
-            CSYNC1 <= S;
 
-            -- pipeline sample
-            if counter(2 downto 0) = unsigned(sp) then
+            -- synchronize CSYNC to the sampling clock
+            -- if link fitted sync is inverted. If +ve vsync connected to link & +ve hsync to S then generate -ve composite sync
+            csync1 <= mux_sync xor invert;
+
+            -- De-glitch CSYNC
+            --    csync1 is the possibly glitchy input
+            --    csync2 is the filtered output
+            if csync1 = csync2 then
+                -- output same as input, reset the counter
+                csync_counter <= to_unsigned(0, csync_counter'length);
+            else
+                -- output different to input
+                csync_counter <= csync_counter + 1;
+                -- if the difference lasts for N-1 cycles, update the output
+                if csync_counter = 3 then
+                    csync2 <= csync1;
+                end if;
+            end if;
+
+            -- Counter is used to find sampling point for first pixel
+            last <= csync2;
+            -- reset counter on the rising edge of csync
+            if last = '0' and csync2 = '1' then
+                if rate(1) = '1' then
+                    counter(7 downto 3) <= "10" & delay & "0";
+                    if half = '1' then
+                        counter(2 downto 0) <= "000";
+                    elsif mode7 = '1' then
+                        counter(2 downto 0) <= "100";
+                    else
+                        counter(2 downto 0) <= "011";
+                    end if;
+                else
+                    counter(7 downto 3) <= "110" & delay;
+                    if half = '1' then
+                        counter(2 downto 0) <= "000";
+                    elsif mode7 = '1' then
+                        counter(2 downto 0) <= "100";
+                    else
+                        counter(2 downto 0) <= "011";
+                    end if;
+                end if;
+            elsif mode7 = '1' or counter(2 downto 0) /= 5 then
+                if counter(counter'left) = '1' then
+                    counter <= counter + 1;
+                else
+                    counter(counter'left - 1 downto 0) <= counter(counter'left - 1 downto 0) + 1;
+                end if;
+            else
+                if counter(counter'left) = '1' then
+                    counter <= counter + 3;
+                else
+                    counter(counter'left - 1 downto 0) <= counter(counter'left - 1 downto 0) + 3;
+                end if;
+            end if;
+
+            -- Sample point offset index
+            if counter(counter'left) = '1' then
+                index <= "000";
+            else
+                -- so index offset changes at the same time counter wraps 7->0
+                -- so index offset changes at the same time counter wraps ->0
+                if (mode7 = '0' and counter(2 downto 0) = 4) or (mode7 = '1' and counter(2 downto 0) = 6) then
+                    case index is
+                        when "000" =>
+                            index <= "001";
+                        when "001" =>
+                            index <= "010";
+                        when "010" =>
+                            index <= "011";
+                        when "011" =>
+                            index <= "100";
+                        when "100" =>
+                            index <= "101";
+                        when others =>
+                            index <= "000";
+                    end case;
+                end if;
+            end if;
+
+            -- Sample point offset
+            case index is
+                when "000" =>
+                    offset <= offset_B;
+                when "001" =>
+                    offset <= offset_C;
+                when "010" =>
+                    offset <= offset_D;
+                when "011" =>
+                    offset <= offset_E;
+                when "100" =>
+                    offset <= offset_F;
+                when others =>
+                    offset <= offset_A;
+            end case;
+
+            -- sample/shift control
+            if counter(counter'left) = '0' and counter(2 downto 0) = unsigned(offset) and (rate(1) = '0' or rate(0) = counter(3)) then
                 sample <= '1';
             else
                 sample <= '0';
             end if;
-            -- pipeline counter
-            counter2(5 downto 3) <= counter(5 downto 3);
 
-            if CSYNC1 = '0' then
-                -- in the line sync
-                psync <= '0';
-                -- counter is used to find sampling point for first pixel
-                if mode7 = '1' then
-                    counter <= mode7_offset;
-                    sp_index <= "000";
-                    sp <= mode7_sp_A;
+            -- R Sample/shift register
+            if sample = '1' then
+                if rate = "01" then
+                    shift_R <= R1 & R0 & shift_R(3 downto 2); -- double
                 else
-                    counter <= default_offset;
-                    sp_index <= "111";
-                    sp <= default_sp;
-                end if;
-            else
-                -- within the line
-                if mode7 = '1' then
-                    if counter = 63 then
-                        counter <= to_unsigned(0, counter'length);
-                    else
-                        counter <= counter + 1;
-                    end if;
-                    if counter(2 downto 0) = 7 then
-                        case sp_index is
-                            when "000" =>
-                                sp_index <= "001";
-                                sp <= mode7_sp_B;
-                            when "001" =>
-                                sp_index <= "010";
-                                sp <= mode7_sp_C;
-                            when "010" =>
-                                sp_index <= "011";
-                                sp <= mode7_sp_D;
-                            when "011" =>
-                                sp_index <= "100";
-                                sp <= mode7_sp_E;
-                            when "100" =>
-                                sp_index <= "101";
-                                sp <= mode7_sp_F;
-                            when others =>
-                                sp_index <= "000";
-                                sp <= mode7_sp_A;
-                        end case;
-                    end if;
-                else
-                    if counter = 61 then
-                        counter <= to_unsigned(0, counter'length);
-                    elsif counter(2 downto 0) = 5 then
-                        counter <= counter + 3;
-                    else
-                        counter <= counter + 1;
-                    end if;
-                end if;
-
-                if counter(11) = '0' then
-                    if sample = '1' then
-                        shift <= B & G & R & shift(11 downto 3);
-                        if counter2(4 downto 3) = "00" then
-                            quad <= shift;
-                            psync <= counter2(5);
-                        end if;
-                    end if;
-                else
-                    quad <= (others => '0');
-                    psync <= '0';
+                    shift_R <= R & shift_R(3 downto 1);
                 end if;
             end if;
+
+            -- G Sample/shift register
+            if sample = '1' then
+                if rate = "01" then
+                    shift_G <= G1 & G0 & shift_G(3 downto 2); -- double
+                else
+                    shift_G <= G & shift_G(3 downto 1);
+                end if;
+            end if;
+
+            -- B Sample/shift register
+            if sample = '1' then
+                if rate = "01" then
+                    shift_B <= B1 & B0 & shift_B(3 downto 2); -- double
+                else
+                    shift_B <= B & shift_B(3 downto 1);
+                end if;
+            end if;
+
+            -- Pipeline when to update the quad
+            if counter(counter'left) = '0' and (
+                (rate = "00" and counter(4 downto 0) = 0)  or    -- normal
+                (rate = "01" and counter(3 downto 0) = 0)  or    -- double
+                (rate = "10" and counter(5 downto 0) = 0)  or    -- subsample even
+                (rate = "11" and counter(5 downto 0) = 32)) then -- subsample odd
+                -- toggle is asserted in cycle 1
+                toggle <= '1';
+            else
+                toggle <= '0';
+            end if;
+
+            -- Output quad register
+            if version = '0' then
+                if SupportAnalog then
+                    if analog = '1' then
+                        quad <= VERSION_NUM_RGB_ANALOG;
+                    else
+                        quad <= VERSION_NUM_RGB_TTL;
+                    end if;
+                else
+                    quad <= VERSION_NUM_BBC;
+                end if;
+            elsif counter(counter'left) = '1' then
+                quad <= (others => '0');
+            elsif toggle = '1' then
+                -- quad changes at the start of cycle 2
+                quad(11) <= shift_B(3);
+                quad(10) <= shift_G(3);
+                quad(9)  <= shift_R(3);
+                quad(8)  <= shift_B(2);
+                quad(7)  <= shift_G(2);
+                quad(6)  <= shift_R(2);
+                quad(5)  <= shift_B(1);
+                quad(4)  <= shift_G(1);
+                quad(3)  <= shift_R(1);
+                quad(2)  <= shift_B(0);
+                quad(1)  <= shift_G(0);
+                quad(0)  <= shift_R(0);
+            end if;
+
+            -- Output a skewed version of psync
+            if version = '0' then
+                psync <= vsync_in;
+            elsif counter(counter'left) = '1' then
+                psync <= '0';
+            elsif counter(3 downto 0) = 3 then -- comparing with N gives N-1 cycles of skew
+                if rate = "00" then
+                    psync <= counter(5); -- normal
+                elsif rate = "01" then
+                    psync <= counter(4); -- double
+                elsif counter(5) = rate(0) then
+                    psync <= counter(6); -- subsample
+                end if;
+            end if;
+
         end if;
     end process;
 
-    csync <= S;
+    csync <= csync2; -- output the registered version to save a macro-cell
 
-    LED1 <= mode7;
+    analog_additions: if SupportAnalog generate
+        clamp_int <= not(csync1 or csync2);   -- csync2 is cleaned but delayed so OR with csync1 to remove delay on trailing edge of sync pulse
 
-    --LED2 <= led_counter(led_counter'left);
+        clamp_enable <= '1' when mux = '1' else version;
 
-    SWOut <= SW;
-    
-    test <= sample;
+        analog <= 'Z' when clamp_enable = '0' else clamp_int;
+    end generate;
 
 end Behavorial;

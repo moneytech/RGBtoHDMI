@@ -3,36 +3,57 @@
 # exit on error
 set -e
 
-NAME=RGBtoHDMI_$(date +"%Y%m%d_%H%M")_$USER
+# Check if any uncommitted changes in tracked files
+if [ -n "$(git status --untracked-files=no --porcelain)" ]; then
+    echo "Uncommitted changes; exiting....."
+    exit
+fi
+
+# Lookup the last commit ID
+VERSION="$(git rev-parse --short HEAD)"
+
+NAME=RGBtoHDMI_$(date +"%Y%m%d")_$VERSION
 
 DIR=releases/${NAME}
 mkdir -p $DIR
 
-for MODEL in rpi3 rpi2 rpi
-do    
+for MODEL in rpi rpi2 rpi3 rpi4
+do
     # compile debug kernel
+    ./clobber.sh
+    ./configure_${MODEL}.sh -DDEBUG=1
+    make -B -j
+    mv kernel${MODEL}.img ${DIR}/kernel${MODEL}_debug.img
+    # compile normal kernel
     ./clobber.sh
     ./configure_${MODEL}.sh
     make -B -j
-    mv kernel*.img ${DIR}
+    mv kernel${MODEL}.img ${DIR}/kernel${MODEL}.img
 done
 
-cp -a firmware/* ${DIR}
 
 # Create a simple README.txt file
 cat >${DIR}/README.txt <<EOF
 RGBtoHDMI
 
-(c) 2017 David Banks (hoglet), Dominic Plunkett (dp11), Ed Spittles (BigEd) and other contributors
+(c) 2020 David Banks (hoglet), Ian Bradbury (IanB), Dominic Plunkett (dp11) and Ed Spittles (BigEd)
 
   git version: $(grep GITVERSION gitversion.h  | cut -d\" -f2)
 build version: ${NAME}
 EOF
 
-cp config.txt cmdline.txt ${DIR}
+cp -a config.txt ${DIR}
+cp -a default_config.txt ${DIR}
+cp -a firmware/* ${DIR}
+cp -a cpld_firmware ${DIR}
+cp -a Profiles ${DIR}
+cp -a Resolutions ${DIR}
+
+# Convert to windows line endings
+find ${DIR} -name '*.txt' -print0 | xargs -0 unix2dos
+
 cd releases/${NAME}
 zip -qr ../${NAME}.zip .
 cd ../..
 
 unzip -l releases/${NAME}.zip
- 

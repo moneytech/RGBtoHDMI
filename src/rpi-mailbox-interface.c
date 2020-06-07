@@ -6,6 +6,8 @@
 #include "rpi-mailbox-interface.h"
 #include "cache.h"
 #include "defs.h"
+#include "osd.h"
+#include "logging.h"
 
 /* Make sure the property tag buffer is aligned to a 16-byte boundary because
    we only have 28-bits available in the property interface protocol to pass
@@ -13,16 +15,17 @@
 static int *pt = ( int *) UNCACHED_MEM_BASE ;// [PROP_BUFFER_SIZE] __attribute__((aligned(16)));
 static int pt_index ;
 
-//#define PRINT_PROP_DEBUG 1
-
-#ifdef DEBUG
-#define BLACK 0x00202020
-#else
-#define BLACK 0x00000000
-#endif
+static volatile int mb_response_pending = 0;
 
 void RPI_PropertyInit( void )
 {
+
+    // Process any pending responses from the previous call
+    if (mb_response_pending) {
+        RPI_Mailbox0Read( MB0_TAGS_ARM_TO_VC );
+        mb_response_pending = 0;
+    }
+
     /* Without this, we end up reading garbage back in the property interface version of init_framebuffer */
     /* TODO: investigate what's going on here! */
     /* Values < 32 fail in this way */
@@ -51,6 +54,7 @@ void RPI_PropertyInit( void )
 */
 void RPI_PropertyAddTag( rpi_mailbox_tag_t tag, ... )
 {
+    int num_colours;
     va_list vl;
     va_start( vl, tag );
 
@@ -121,7 +125,7 @@ void RPI_PropertyAddTag( rpi_mailbox_tag_t tag, ... )
             pt[pt_index++] = va_arg( vl, int ); // R3
             pt[pt_index++] = va_arg( vl, int ); // R4
             pt[pt_index++] = va_arg( vl, int ); // R5
-            break;   
+            break;
 
         case TAG_ALLOCATE_BUFFER:
             pt[pt_index++] = 8;
@@ -198,24 +202,17 @@ void RPI_PropertyAddTag( rpi_mailbox_tag_t tag, ... )
             }
             break;
 
-
-        // Hack to allow 8 colours to be set
-
         case TAG_SET_PALETTE:
-            pt[pt_index++] = 40;
+            num_colours = va_arg( vl, int);
+            pt[pt_index++] = 8 + num_colours * 4;
             pt[pt_index++] = 0; /* Request */
-            pt[pt_index++] = 0;                  // Offset to first colour
-            pt[pt_index++] = 8;                  // Number of colours
-            pt[pt_index++] = 0xFF000000 | BLACK; // Colour 0 - Black
-            pt[pt_index++] = 0xFF0000FF | BLACK; // Colour 1 - Red
-            pt[pt_index++] = 0xFF00FF00 | BLACK; // Colour 2 - Green
-            pt[pt_index++] = 0xFF00FFFF | BLACK; // Colour 3 - Yellow
-            pt[pt_index++] = 0xFFFF0000 | BLACK; // Colour 4 - Blue
-            pt[pt_index++] = 0xFFFF00FF | BLACK; // Colour 5 - Magenta
-            pt[pt_index++] = 0xFFFFFF00 | BLACK; // Colour 6 - Cyan
-            pt[pt_index++] = 0xFFFFFFFF | BLACK; // Colour 7 - White
-            break;   
-
+            pt[pt_index++] = 0;                        // Offset to first colour
+            pt[pt_index++] = num_colours;              // Number of colours
+            uint32_t *palette = va_arg( vl, uint32_t *);
+            for (int i = 0; i < num_colours; i++) {
+               pt[pt_index++] = palette[i];
+            }
+            break;
 
         default:
             /* Unsupported tags, just remove the tag from the list */
@@ -230,48 +227,73 @@ void RPI_PropertyAddTag( rpi_mailbox_tag_t tag, ... )
 }
 
 
-int RPI_PropertyProcess( void )
+static int RPI_PropertyProcessInternal( int debug )
 {
     int result;
-    
-#if( PRINT_PROP_DEBUG == 1 )
-    int i;
-    log_info( "%s Length: %d", __func__, pt[PT_OSIZE] );
-#endif
+
+    if (debug) {
+       log_info( "%s Length: %d", __func__, pt[PT_OSIZE] );
+    }
     /* Fill in the size of the buffer */
     pt[PT_OSIZE] = ( pt_index + 1 ) << 2;
     pt[PT_OREQUEST_OR_RESPONSE] = 0;
 
-#if( PRINT_PROP_DEBUG == 1 )
-    for( i = 0; i < (pt[PT_OSIZE] >> 2); i++ )
-        log_info( "Request: %3d %8.8X", i, pt[i] );
-#endif
+    if (debug) {
+       for(int i = 0; i < (pt[PT_OSIZE] >> 2); i++ )
+          log_info( "Request: %3d %8.8X", i, pt[i] );
+    }
+
     RPI_Mailbox0Write( MB0_TAGS_ARM_TO_VC, (unsigned int)pt );
 
     result = RPI_Mailbox0Read( MB0_TAGS_ARM_TO_VC );
 
-#if( PRINT_PROP_DEBUG == 1 )
-    for( i = 0; i < (pt[PT_OSIZE] >> 2); i++ )
-        log_info( "Response: %3d %8.8X", i, pt[i] );
-#endif
+    if (debug) {
+       for(int i = 0; i < (pt[PT_OSIZE] >> 2); i++ )
+          log_info( "Response: %3d %8.8X", i, pt[i] );
+    }
+
     return result;
 }
 
-void RPI_PropertyProcessNoCheck( void )
+int RPI_PropertyProcess( void )
 {
-#if( PRINT_PROP_DEBUG == 1 )
-    int i;
-    log_info( "%s Length: %d", __func__, pt[PT_OSIZE] );
-#endif
+   return RPI_PropertyProcessInternal(0);
+}
+
+int RPI_PropertyProcessDebug( void )
+{
+   return RPI_PropertyProcessInternal(1);
+}
+
+
+static void RPI_PropertyProcessNoCheckInternal( int debug )
+{
+    if (debug) {
+       log_info( "%s Length: %d", __func__, pt[PT_OSIZE] );
+    }
     /* Fill in the size of the buffer */
     pt[PT_OSIZE] = ( pt_index + 1 ) << 2;
     pt[PT_OREQUEST_OR_RESPONSE] = 0;
 
-#if( PRINT_PROP_DEBUG == 1 )
-    for( i = 0; i < (pt[PT_OSIZE] >> 2); i++ )
-        log_info( "Request: %3d %8.8X", i, pt[i] );
-#endif
+    if (debug) {
+       for( int i = 0; i < (pt[PT_OSIZE] >> 2); i++ )
+          log_info( "Request: %3d %8.8X", i, pt[i] );
+    }
+
     RPI_Mailbox0Write( MB0_TAGS_ARM_TO_VC, (unsigned int)pt );
+
+    // Remember that we have a response pending
+    mb_response_pending = 1;
+}
+
+void RPI_PropertyProcessNoCheck( void )
+{
+   RPI_PropertyProcessNoCheckInternal(0);
+}
+
+void RPI_PropertyProcessNoCheckDebug( void )
+{
+   RPI_PropertyProcessNoCheckInternal(1);
 }
 
 rpi_mailbox_property_t* RPI_PropertyGet( rpi_mailbox_tag_t tag)

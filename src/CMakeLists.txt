@@ -62,6 +62,17 @@ file( GLOB core_files
     armc-cstubs.c
     rgb_to_hdmi.c
     rgb_to_fb.S
+    capture_line_mode7_4bpp.S
+    capture_line_default_4bpp_8bpp.S
+    capture_line_default_sixbits_4bpp_8bpp.S
+    capture_line_default_double_4bpp_8bpp.S
+    capture_line_default_sixbits_double_4bpp_8bpp.S
+    capture_line_fast_4bpp_8bpp.S
+    capture_line_fast_sixbits_4bpp_8bpp.S
+    capture_line_ntsc_sixbits_4bpp_8bpp.S
+    capture_line_inband_4bpp_8bpp.S
+    capture_line_oddeven_4bpp_8bpp.S
+    capture_line_half_4bpp_8bpp.S
     defs.h
     arm-exception.c
     cache.c
@@ -80,6 +91,54 @@ file( GLOB core_files
     info.h
     logging.c
     logging.h
+    cpld.h
+    cpld_atom.h
+    cpld_atom.c
+    cpld_rgb.h
+    cpld_rgb.c
+    cpld_yuv.h
+    cpld_yuv.c
+    cpld_null.h
+    cpld_null.c
+    geometry.h
+    geometry.c
+    osd.h
+    osd.c
+    saa5050_font.h
+    saa5050_font.c
+    8x8_font.h
+    8x8_font.c
+    # File system functions
+    filesystem.c
+    filesystem.h
+    # LodePNG Library
+    lodepng.c
+    lodepng.h
+    # Tiny PNG Output Library
+    tiny_png_out.c
+    tiny_png_out.h
+    # FatFS + EMMC driver
+    fatfs/block.h
+    fatfs/diskio.c
+    fatfs/diskio.h
+    fatfs/ff.c
+    fatfs/ffconf.h
+    fatfs/ff.h
+    fatfs/integer.h
+    fatfs/options/ccsbcs.c
+    fatfs/sdcard.c
+    # FaTFS needs the rpi-systemtimer package
+    rpi-systimer.c
+    rpi-systimer.h
+    # Xilinx Embedded CPLD programming
+    jtag/lenval.c
+    jtag/lenval.h
+    jtag/micro.c
+    jtag/micro.h
+    jtag/ports.c
+    jtag/ports.h
+    jtag/update_cpld.c
+    jtag/update_cpld.h
 )
 
 
@@ -113,4 +172,3 @@ add_custom_command(
 )
 
 add_dependencies(rgb-to-hdmi gitversion)
-
